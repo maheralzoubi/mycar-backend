@@ -1,4 +1,17 @@
-import { Body, Controller, Get, HttpCode, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  Param,
+  Patch,
+  Post,
+  Query,
+  UploadedFiles,
+  UseGuards,
+  UseInterceptors,
+} from '@nestjs/common';
+import { FilesInterceptor } from '@nestjs/platform-express';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
@@ -9,6 +22,12 @@ import { CreateRequestDto } from './dto/create-request.dto';
 import { RateDto } from './dto/rate.dto';
 import { UpdateRequestStatusDto } from './dto/update-status.dto';
 import { PriceEstimateQuery } from './dto/price-estimate.query';
+import {
+  MAX_REQUEST_PHOTOS,
+  MAX_UPLOAD_BYTES,
+  requestPhotoFileFilter,
+  requestPhotosStorage,
+} from '../common/config/multer.config';
 
 @Controller('service-requests')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -25,6 +44,26 @@ export class ServiceRequestsController {
   @Roles('customer')
   history(@CurrentUser() user: JwtPayload) {
     return this.service.history(user.sub);
+  }
+
+  /**
+   * Multipart upload of up to MAX_REQUEST_PHOTOS images in the `photos`
+   * field. Returns `{ photoUrls }` to pass to `POST /service-requests`.
+   */
+  @Post('photos')
+  @Roles('customer')
+  @UseInterceptors(
+    FilesInterceptor('photos', MAX_REQUEST_PHOTOS, {
+      storage: requestPhotosStorage,
+      fileFilter: requestPhotoFileFilter,
+      limits: { fileSize: MAX_UPLOAD_BYTES, files: MAX_REQUEST_PHOTOS },
+    }),
+  )
+  uploadPhotos(
+    @CurrentUser() user: JwtPayload,
+    @UploadedFiles() files: Express.Multer.File[] | undefined,
+  ) {
+    return this.service.uploadPhotos(user.sub, files ?? []);
   }
 
   @Post()

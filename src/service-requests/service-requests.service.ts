@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
+import { access, unlink } from 'fs/promises';
 import { ServiceRequest, ServiceRequestDocument } from './schemas/service-request.schema';
 import { CreateRequestDto } from './dto/create-request.dto';
 import { RateDto } from './dto/rate.dto';
@@ -22,6 +23,7 @@ import { RealtimeGateway } from '../realtime/realtime.gateway';
 import { PushNotificationsService } from '../notifications/push-notifications.service';
 import { toRequestResponse } from './service-requests.mapper';
 import { toPublicDriver } from '../drivers/drivers.mapper';
+import { hasImageSignature, ownedPhotoPath, requestPhotoUrl } from './request-photos';
 
 const STATUS_PUSH_TEXT: Partial<Record<RequestStatus, string>> = {
   [RequestStatus.DRIVER_EN_ROUTE]: 'Your driver is on the way',
@@ -54,7 +56,39 @@ export class ServiceRequestsService {
     };
   }
 
+  /**
+   * Accepts photos multer has already stored under the customer's folder and
+   * returns their URLs for `create`. If any file isn't really the image type
+   * it claims to be, the whole batch is deleted and rejected.
+   */
+  async uploadPhotos(customerId: string, files: Express.Multer.File[]) {
+    if (files.length === 0) {
+      throw new BadRequestException('At least one photo is required');
+    }
+    const valid = await Promise.all(
+      files.map((file) => hasImageSignature(file.path, file.mimetype).catch(() => false)),
+    );
+    if (valid.includes(false)) {
+      await Promise.all(files.map((file) => unlink(file.path).catch(() => undefined)));
+      throw new BadRequestException('One or more photos are not valid images');
+    }
+    return { photoUrls: files.map((file) => requestPhotoUrl(customerId, file.filename)) };
+  }
+
+  /** Rejects photo URLs this customer didn't upload or that no longer exist. */
+  private async checkPhotoUrls(customerId: string, photoUrls: string[]) {
+    for (const url of photoUrls) {
+      const path = ownedPhotoPath(url, customerId);
+      const exists = path !== null && (await access(path).then(() => true, () => false));
+      if (!exists) {
+        throw new BadRequestException(`Unknown photo: ${url}`);
+      }
+    }
+    return photoUrls;
+  }
+
   async create(customerId: string, dto: CreateRequestDto) {
+    const photoUrls = await this.checkPhotoUrls(customerId, dto.photoUrls ?? []);
     const { estimatedPrice, estimatedMinutes } = await this.estimatePrice(
       dto.serviceType,
       dto.location,
@@ -66,6 +100,7 @@ export class ServiceRequestsService {
       pickupLocation: dto.location,
       pickupAddress: dto.address,
       notes: dto.notes ?? null,
+      photoUrls,
       estimatedPrice,
       estimatedMinutes,
       status: RequestStatus.SEARCHING,
